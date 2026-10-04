@@ -5,8 +5,9 @@
 登山装備チェックリスト管理アプリ「Gear List」(仮)。
 入社前課題として、Hono + Prisma + Next.js + PostgreSQL でCRUDを実装する。
 
-- 要件・データモデル・API設計: `docs/REQUIREMENTS.md` を参照
-- 日次タスク・進捗: `docs/TASKS.md` を参照
+- 要件・データモデル・API設計: `REQUIREMENTS.md`(リポジトリ直下)を参照
+- 日次タスク・進捗: `TASKS.md`(リポジトリ直下)を参照
+- 設計メモ: `docs/AUTH_DESIGN.md` / `docs/QUEUE_DESIGN.md` / `docs/STACK_DESIGN.md`
 
 ## 最重要ルール: ハンズオン形式
 
@@ -26,6 +27,8 @@
 - ORM: Prisma
 - DB: PostgreSQL 16 (Docker)
 - バリデーション: Zod (@hono/zod-validator)
+- メール: Nodemailer + Mailpit(開発用SMTP。Web UI は http://localhost:8025)
+- Queue: PostgreSQL の Job テーブル + Worker(`backend/src/worker.ts`、別プロセス)
 
 ## 禁止事項
 
@@ -38,7 +41,7 @@
 ## ディレクトリ構成
 
 ```
-my-app/
+gear-list/
 ├── frontend/            # Next.js
 │   ├── app/
 │   ├── components/
@@ -47,15 +50,29 @@ my-app/
 ├── backend/             # Hono
 │   ├── src/
 │   │   ├── index.ts     # サーバ起動のみ
+│   │   ├── worker.ts    # Job を処理する Worker(API とは別プロセス)
+│   │   ├── middleware/  # 認証 middleware
 │   │   ├── routes/      # ルーティング定義
 │   │   ├── schemas/     # Zodスキーマ
 │   │   └── lib/prisma.ts  # PrismaClientシングルトン
 │   └── prisma/
 │       ├── schema.prisma
 │       └── seed.ts
-├── docker-compose.yml   # PostgreSQL用
-└── docs/
+├── docker-compose.yml   # PostgreSQL + Mailpit
+├── REQUIREMENTS.md / TASKS.md
+└── docs/                # 設計メモ(AUTH / QUEUE / STACK)
 ```
+
+## 実行・コードの注意点
+
+- ルートに package.json はない。コマンドは `backend/` と `frontend/` でそれぞれ実行する
+- 起動: `docker compose up -d` → backend `npm run dev`(:8787)+ **別ターミナルで `npm run worker`** → frontend `npm run dev`(:3000)
+  - Worker を起動していないと、確認メールは Job テーブルに溜まるだけで送信されない
+- seed: `cd backend && npx prisma db seed`(設定は `prisma.config.ts` にあり、package.json にはない)。ログイン用アカウント: `test@example.com` / `password123`
+- Prisma Client は `src/generated/prisma/client.js` から import する(`@prisma/client` ではない)。schema を変更したら `npx prisma migrate dev`
+- backend は ESM (NodeNext) なので、相対 import には `.js` 拡張子が必要
+- `import "dotenv/config"` は `index.ts` / `worker.ts` の最初の import から動かさない(他の import より先に .env を読む必要がある)
+- 他ユーザーのリソースへのアクセスは **404** を返す(403 だとリソースの存在が漏れるため。TASKS 1-12 で決定)
 
 ## コーディング規約
 
@@ -85,8 +102,8 @@ Phase 1(CRUD アプリ)は PR #1〜#13 で完了。ここから Phase 2 に入�
 | 項目 | 位置づけ |
 |---|---|
 | 認証(ログイン・ログアウト等) | **必須(面談で提示)** → PR #15〜#18 で実装完了。振り返り(1-17)は後日実施 |
-| メール機能 | **発展候補**。口頭で例示されたのみで必須ではない。仕様(何を送るか・どの技術/サービスか)は未定。着手時に相談して決める |
-| Queue / Stack | **時間があれば**。まず概念を調べて理解し、できそうな範囲で実装してみるのもアリ。AWS SQS は面談での具体例であり、特定技術の使用は必須ではない |
+| メール機能 | 発展候補 → 相談の上「メールアドレス確認」を実装済み(PR #20・#21)。振り返り 2-5 は後日 |
+| Queue / Stack | 時間があれば → 実装済み(Queue: PR #22・#23 / Stack(Undo): PR #24) |
 | 外部API連携等 | **発展候補**。Claude から案を出すのは可だが、何を・なぜ・何を学べるか・難易度を提示し、**相談して決めてから実装する** |
 
 **面談で言われていない要件を推測で必須に追加しない。**一般論として必要という理由だけで「これが終わらないと未完成」と判定しない。追加提案をする場合は「面談の課題ではなく Claude からの発展提案」であることを明示する。
@@ -178,18 +195,18 @@ Phase 1(CRUD アプリ)は PR #1〜#13 で完了。ここから Phase 2 に入�
 作業を始める前に **必ず以下の順で状態を把握する**。会話の記憶に頼らない。
 
 1. `git branch --show-current` と `git status --short` で現在地を確認
-2. `TASKS.md` の Phase 2 ロードマップで「← いまここ」を確認
-3. `docs/AUTH_DESIGN.md` の「決定事項」表を確認(方式・オリジン対応・データ扱い・パスワードハッシュ等)
+2. `TASKS.md` の Phase 2 ロードマップ表の「状態」列で現在地を確認
+3. 関係する設計メモ(`docs/AUTH_DESIGN.md` の「決定事項」表、`QUEUE_DESIGN.md`、`STACK_DESIGN.md`)を確認
 4. 変更対象ファイルの**現物を読んでから**編集する(記憶で書かない)
 
 各ステップの実装は以下を守る:
 
 - **1ステップ = 1つの関心事**。スキーマ変更・seed・ルート追加を1回のセッションで混ぜない
-- 編集後は必ず `cd backend && npx tsc --noEmit`(または frontend)で型チェック
+- 編集後は必ず `cd backend && npx tsc --noEmit`(または frontend)で型チェック。`prisma/seed.ts` は `npx tsc --noEmit -p prisma/tsconfig.json`
 - API 変更後は必ず curl で正常系・異常系を叩き、結果を提示する
 - 認証・認可の変更後は「他ユーザーの ID 直接指定」ケースを必ず叩く
 - **一次情報(公式ドキュメント)を確認してから書く**。ネット記事のコピーは禁止。参照 URL を PR に残す
-- 完了したら `TASKS.md` の該当行を ✅ に更新し「← いまここ」を次へ進める
+- 完了したら `TASKS.md` の該当行を ✅ に更新する
 - ユーザーが「わからない」と言ったら粒度を落とす。「書いて」と言われたら書くが、**何をしているか・なぜ必要か**を必ず添える
 
 ## Claude の担当範囲(Phase 2)
